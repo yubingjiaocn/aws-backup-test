@@ -1,0 +1,56 @@
+# eksctl Configuration - Uses Terraform-created Infrastructure
+#
+# Before using this config:
+# 1. Run: cd terraform && terraform apply
+# 2. Export Terraform outputs as environment variables (see script below)
+# 3. Run: eksctl create cluster -f eksctl-config/cluster.yaml
+#
+# To export Terraform outputs, run:
+# ./eksctl-config/export-tf-outputs.sh
+
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: ${CLUSTER_NAME}
+  region: ${AWS_REGION}
+  version: "${KUBERNETES_VERSION:-1.32}"
+
+# Use Terraform-created VPC
+vpc:
+  id: ${VPC_ID}
+  subnets:
+    private:
+      ${PRIVATE_SUBNET_IDS}  # Will be replaced by script
+    public:
+      ${PUBLIC_SUBNET_IDS}   # Will be replaced by script
+
+# Use Terraform-created IAM roles
+iam:
+  serviceRoleARN: ${CLUSTER_ROLE_ARN}
+  withOIDC: true  # Enable OIDC for Pod Identity
+
+# Enable Pod Identity addon
+addons:
+  - name: eks-pod-identity-agent
+
+# Managed node group using Terraform-created IAM role
+managedNodeGroups:
+  - name: ng-1
+    instanceType: t3.medium
+    desiredCapacity: 2
+    minSize: 2
+    maxSize: 4
+    volumeSize: 50
+    iam:
+      instanceRoleARN: ${NODE_ROLE_ARN}
+    privateNetworking: true
+    tags:
+      k8s.io/cluster-autoscaler/enabled: "true"
+      k8s.io/cluster-autoscaler/${CLUSTER_NAME}: "owned"
+      karpenter.sh/discovery: ${CLUSTER_NAME}
+
+# CloudWatch logging
+cloudWatch:
+  clusterLogging:
+    enableTypes: ["api", "audit", "authenticator", "controllerManager", "scheduler"]

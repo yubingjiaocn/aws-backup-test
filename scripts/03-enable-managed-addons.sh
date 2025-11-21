@@ -114,6 +114,9 @@ enable_ebs_csi_driver() {
     log_info "等待 Add-on 激活..."
     wait_for_addon_active "$CLUSTER_NAME" "$addon_name" 600
 
+    # 验证 CSI driver pods 运行状态
+    verify_csi_driver_pods "ebs"
+
     log_success "EBS CSI Driver Add-on 启用成功"
 }
 
@@ -161,6 +164,9 @@ enable_efs_csi_driver() {
 
     log_info "等待 Add-on 激活..."
     wait_for_addon_active "$CLUSTER_NAME" "$addon_name" 600
+
+    # 验证 CSI driver pods 运行状态
+    verify_csi_driver_pods "efs"
 
     log_success "EFS CSI Driver Add-on 启用成功"
 }
@@ -291,6 +297,46 @@ EOF
 
     log_success "EFS CSI Driver IAM 角色创建完成"
     echo "$role_arn"
+}
+
+verify_csi_driver_pods() {
+    local driver_type=$1  # "ebs" or "efs"
+    local timeout=300
+    local elapsed=0
+
+    log_info "验证 ${driver_type} CSI driver pods 运行状态..."
+
+    # 根据 driver 类型设置 label selector
+    local label_selector
+    if [ "$driver_type" = "ebs" ]; then
+        label_selector="app.kubernetes.io/name=aws-ebs-csi-driver,app.kubernetes.io/component=csi-driver"
+    else
+        label_selector="app.kubernetes.io/name=aws-efs-csi-driver,app.kubernetes.io/component=csi-driver"
+    fi
+
+    # 等待 controller pods 就绪
+    log_info "等待 CSI controller pods 就绪..."
+    while [ $elapsed -lt $timeout ]; do
+        local controller_ready=$(kubectl get pods -n kube-system \
+            -l "$label_selector" \
+            -o json 2>/dev/null | \
+            jq -r '.items[] | select(.metadata.name | contains("controller")) | select(.status.phase == "Running") | .metadata.name' | wc -l)
+
+        if [ "$controller_ready" -ge 1 ]; then
+            log_success "  ✓ CSI controller pods 运行正常 ($controller_ready 个)"
+            kubectl get pods -n kube-system -l "$label_selector" | grep controller
+            return 0
+        fi
+
+        log_info "  等待 CSI controller pods 启动... (已等待 ${elapsed}s/${timeout}s)"
+        sleep 10
+        elapsed=$((elapsed + 10))
+    done
+
+    log_error "CSI controller pods 在 ${timeout}s 内未启动"
+    kubectl get pods -n kube-system -l "$label_selector"
+    kubectl describe pods -n kube-system -l "$label_selector" | tail -50
+    return 1
 }
 
 verify_addons() {

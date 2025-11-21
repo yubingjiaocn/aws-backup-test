@@ -52,34 +52,37 @@ main() {
     # 执行验证
     local all_passed=true
 
-    log_info "步骤 1/10: 验证集群版本..."
+    log_info "步骤 1/11: 验证集群版本..."
     verify_cluster_version_info || all_passed=false
 
-    log_info "步骤 2/10: 验证节点状态..."
+    log_info "步骤 2/11: 验证节点状态..."
     verify_nodes || all_passed=false
 
-    log_info "步骤 3/10: 验证托管 Add-on..."
+    log_info "步骤 3/11: 验证托管 Add-on..."
     verify_managed_addons || all_passed=false
 
-    log_info "步骤 4/10: 验证命名空间..."
+    log_info "步骤 4/11: 验证命名空间..."
     verify_namespaces || all_passed=false
 
-    log_info "步骤 5/10: 验证 Deployments..."
+    log_info "步骤 5/11: 验证 Deployments..."
     verify_deployments || all_passed=false
 
-    log_info "步骤 6/10: 验证 StatefulSets..."
+    log_info "步骤 6/11: 验证 StatefulSets..."
     verify_statefulsets || all_passed=false
 
-    log_info "步骤 7/10: 验证 PVC 状态..."
+    log_info "步骤 7/11: 验证 StorageClass..."
+    verify_storageclasses || all_passed=false
+
+    log_info "步骤 8/11: 验证 PVC 状态..."
     verify_pvcs || all_passed=false
 
-    log_info "步骤 8/10: 验证 Karpenter CRD 和 CR..."
+    log_info "步骤 9/11: 验证 Karpenter CRD 和 CR..."
     verify_karpenter || all_passed=false
 
-    log_info "步骤 9/10: 验证数据完整性..."
+    log_info "步骤 10/11: 验证数据完整性..."
     verify_data_integrity || all_passed=false
 
-    log_info "步骤 10/10: 生成验证报告..."
+    log_info "步骤 11/11: 生成验证报告..."
     generate_verification_report
 
     if [ "$all_passed" = true ]; then
@@ -158,6 +161,26 @@ verify_managed_addons() {
 
             if [ "$status" = "ACTIVE" ]; then
                 log_success "  ✓ $addon: $status"
+
+                # 检查 CSI driver pods 运行状态
+                local pod_label
+                if [[ "$addon" == *"ebs"* ]]; then
+                    pod_label="app.kubernetes.io/name=aws-ebs-csi-driver"
+                else
+                    pod_label="app.kubernetes.io/name=aws-efs-csi-driver"
+                fi
+
+                local running_pods=$(kubectl get pods -n kube-system -l "$pod_label" \
+                    -o json 2>/dev/null | \
+                    jq -r '.items[] | select(.status.phase == "Running") | .metadata.name' | wc -l)
+
+                if [ "$running_pods" -gt 0 ]; then
+                    log_success "    ✓ CSI driver pods 运行正常 ($running_pods 个)"
+                else
+                    log_warning "    ⚠ CSI driver pods 未运行"
+                    kubectl get pods -n kube-system -l "$pod_label"
+                    all_active=false
+                fi
             else
                 log_warning "  ⚠ $addon: $status"
                 all_active=false
@@ -240,6 +263,48 @@ verify_statefulsets() {
     return 0
 }
 
+verify_storageclasses() {
+    log_info "检查 StorageClass..."
+
+    local sc_count=$(kubectl get storageclasses --no-headers 2>/dev/null | wc -l)
+    log_info "  StorageClass 数量: $sc_count"
+
+    if [ "$sc_count" -eq 0 ]; then
+        log_warning "  ⚠ 没有 StorageClass"
+        return 1
+    fi
+
+    kubectl get storageclasses
+
+    # 检查必需的 StorageClass
+    local required_scs=("ebs-sc")
+    local all_found=true
+
+    for sc in "${required_scs[@]}"; do
+        if kubectl get storageclass "$sc" &> /dev/null; then
+            log_success "  ✓ StorageClass 存在: $sc"
+
+            # 显示详细信息
+            local provisioner=$(kubectl get storageclass "$sc" -o jsonpath='{.provisioner}')
+            local binding_mode=$(kubectl get storageclass "$sc" -o jsonpath='{.volumeBindingMode}')
+            log_info "    Provisioner: $provisioner"
+            log_info "    Binding Mode: $binding_mode"
+        else
+            log_warning "  ⚠ StorageClass 不存在: $sc"
+            all_found=false
+        fi
+    done
+
+    if [ "$all_found" = true ]; then
+        log_success "  ✓ 所有必需的 StorageClass 已创建"
+        return 0
+    else
+        log_error "  ✗ 部分 StorageClass 缺失"
+        log_info "  提示: 运行 'kubectl apply -f test-workloads/statefulset-ebs.yaml' 创建 StorageClass"
+        return 1
+    fi
+}
+
 verify_pvcs() {
     log_info "检查 PVC 状态..."
 
@@ -254,12 +319,33 @@ verify_pvcs() {
     kubectl get pvc --all-namespaces
 
     # 检查 PVC 绑定状态
-    local pending_count=$(kubectl get pvc --all-namespaces -o json | \
-        jq -r '.items[] | select(.status.phase != "Bound") | "\(.metadata.namespace)/\(.metadata.name)"' | wc -l)
+    local pending_pvcs=$(kubectl get pvc --all-namespaces -o json | \
+        jq -r '.items[] | select(.status.phase != "Bound") | "\(.metadata.namespace)/\(.metadata.name)"')
+    local pending_count=$(echo "$pending_pvcs" | grep -c . || echo 0)
 
     if [ "$pending_count" -gt 0 ]; then
         log_warning "  ⚠ 有 $pending_count 个 PVC 未绑定"
         kubectl get pvc --all-namespaces | grep -v Bound
+
+        # 显示每个 pending PVC 的详细事件
+        log_info "  显示未绑定 PVC 的详细事件:"
+        while IFS= read -r pvc_ref; do
+            if [ -n "$pvc_ref" ]; then
+                local namespace=$(echo "$pvc_ref" | cut -d'/' -f1)
+                local pvc_name=$(echo "$pvc_ref" | cut -d'/' -f2)
+
+                log_info "  --- PVC: $pvc_ref ---"
+                kubectl describe pvc "$pvc_name" -n "$namespace" | grep -A 10 "Events:" || \
+                    log_warning "    无事件信息"
+
+                # 检查是否是 StorageClass 问题
+                local sc_name=$(kubectl get pvc "$pvc_name" -n "$namespace" -o jsonpath='{.spec.storageClassName}')
+                if ! kubectl get storageclass "$sc_name" &> /dev/null; then
+                    log_error "    ✗ StorageClass 不存在: $sc_name"
+                fi
+            fi
+        done <<< "$pending_pvcs"
+
         return 1
     fi
 

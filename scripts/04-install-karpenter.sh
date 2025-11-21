@@ -9,7 +9,7 @@ source "$SCRIPT_DIR/utils.sh"
 
 # 默认配置
 REGION="${REGION:-us-west-2}"
-KARPENTER_VERSION="${KARPENTER_VERSION:-0.33.0}"
+KARPENTER_VERSION="${KARPENTER_VERSION:-1.8.1}"
 
 # 使用说明
 usage() {
@@ -19,11 +19,11 @@ usage() {
 参数:
   CLUSTER_NAME              EKS 集群名称
   REGION                    AWS 区域 (默认: us-west-2)
-  KARPENTER_VERSION         Karpenter 版本 (默认: 0.33.0)
+  KARPENTER_VERSION         Karpenter 版本 (默认: 1.8.1)
 
 示例:
   $0 eks-rollback-v132
-  $0 eks-rollback-v132 us-east-1 0.33.0
+  $0 eks-rollback-v132 us-east-1 1.8.1
 EOF
     exit 1
 }
@@ -277,18 +277,21 @@ install_karpenter_helm() {
     log_info "创建 Karpenter Pod Identity 关联..."
     create_karpenter_pod_identity_association "$controller_role_arn"
 
-    # 添加 Karpenter Helm repo
-    helm repo add karpenter https://charts.karpenter.sh/
-    helm repo update
+    # Logout of helm registry to perform an unauthenticated pull against the public ECR
+    helm registry logout public.ecr.aws || true
 
-    # 安装或升级 Karpenter (不需要 service account annotation)
-    helm upgrade --install karpenter karpenter/karpenter \
+    # 安装或升级 Karpenter (使用 OCI registry)
+    helm upgrade --install karpenter oci://public.ecr.aws/karpenter/karpenter \
         --namespace karpenter \
         --create-namespace \
         --version "$KARPENTER_VERSION" \
         --set settings.clusterName="$CLUSTER_NAME" \
         --set settings.clusterEndpoint="$(aws eks describe-cluster --name "$CLUSTER_NAME" --region "$REGION" --query 'cluster.endpoint' --output text)" \
         --set settings.interruptionQueue="$CLUSTER_NAME" \
+        --set controller.resources.requests.cpu=1 \
+        --set controller.resources.requests.memory=1Gi \
+        --set controller.resources.limits.cpu=1 \
+        --set controller.resources.limits.memory=1Gi \
         --wait
 
     log_success "Karpenter Helm chart 安装完成"

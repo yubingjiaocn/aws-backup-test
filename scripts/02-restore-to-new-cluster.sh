@@ -365,13 +365,14 @@ prepare_restore_metadata() {
                     log_success "    ✓ EBS 恢复点配置完成 (AZ: $az_to_use)"
                     ;;
                 "EFS")
-                    # EFS doesn't need special metadata for restore
-                    # Empty JSON object as a string
+                    # EFS needs newFileSystem parameter
+                    # Set to "true" to create a new file system
+                    local efs_metadata=$(jq -n '{"newFileSystem": "true", "PerformanceMode": "generalPurpose"}' | jq -c '.')
                     nested_restore_metadata=$(echo "$nested_restore_metadata" | jq \
                         --arg rpArn "$rp_arn" \
-                        --arg metadata "{}" \
+                        --arg metadata "$efs_metadata" \
                         '. + {($rpArn): $metadata}')
-                    log_success "    ✓ EFS 恢复点配置完成"
+                    log_success "    ✓ EFS 恢复点配置完成 (新文件系统)"
                     ;;
                 *)
                     # Other types use empty metadata

@@ -235,101 +235,60 @@ resource "aws_iam_role_policy_attachment" "efs_csi" {
 }
 
 # ============================================
-# IAM Roles - Karpenter Controller (Pod Identity)
+# IAM Role - AWS Backup Service Role
 # ============================================
 
-resource "aws_iam_role" "karpenter_controller" {
-  name = "KarpenterControllerRole-${var.cluster_name}"
+resource "aws_iam_role" "aws_backup" {
+  name = "AWSBackupServiceRole-${var.cluster_name}"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
       Effect = "Allow"
       Principal = {
-        Service = "pods.eks.amazonaws.com"
-      }
-      Action = [
-        "sts:AssumeRole",
-        "sts:TagSession"
-      ]
-    }]
-  })
-
-  tags = var.tags
-}
-
-resource "aws_iam_role_policy" "karpenter_controller" {
-  name = "KarpenterControllerPolicy"
-  role = aws_iam_role.karpenter_controller.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Action = [
-        "ec2:CreateFleet",
-        "ec2:CreateLaunchTemplate",
-        "ec2:CreateTags",
-        "ec2:DescribeAvailabilityZones",
-        "ec2:DescribeImages",
-        "ec2:DescribeInstances",
-        "ec2:DescribeInstanceTypeOfferings",
-        "ec2:DescribeInstanceTypes",
-        "ec2:DescribeLaunchTemplates",
-        "ec2:DescribeSecurityGroups",
-        "ec2:DescribeSpotPriceHistory",
-        "ec2:DescribeSubnets",
-        "ec2:DeleteLaunchTemplate",
-        "ec2:RunInstances",
-        "ec2:TerminateInstances",
-        "iam:PassRole",
-        "eks:DescribeCluster",
-        "ssm:GetParameter",
-        "pricing:GetProducts"
-      ]
-      Resource = "*"
-    }]
-  })
-}
-
-# ============================================
-# IAM Roles - Karpenter Node
-# ============================================
-
-resource "aws_iam_role" "karpenter_node" {
-  name = "KarpenterNodeRole-${var.cluster_name}"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Principal = {
-        Service = "ec2.amazonaws.com"
+        Service = "backup.amazonaws.com"
       }
       Action = "sts:AssumeRole"
     }]
   })
 
-  tags = var.tags
+  tags = merge(
+    var.tags,
+    {
+      Description = "Service role for AWS Backup"
+    }
+  )
 }
 
-resource "aws_iam_role_policy_attachment" "karpenter_node_policies" {
-  for_each = toset([
-    "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy",
-    "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy",
-    "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly",
-    "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
-  ])
-
-  role       = aws_iam_role.karpenter_node.name
-  policy_arn = each.value
+resource "aws_iam_role_policy_attachment" "aws_backup_policy" {
+  role       = aws_iam_role.aws_backup.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForBackup"
 }
 
-resource "aws_iam_instance_profile" "karpenter_node" {
-  name = "KarpenterNodeInstanceProfile-${var.cluster_name}"
-  role = aws_iam_role.karpenter_node.name
+resource "aws_iam_role_policy_attachment" "aws_backup_restores_policy" {
+  role       = aws_iam_role.aws_backup.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForRestores"
+}
 
-  tags = var.tags
+resource "aws_iam_role_policy_attachment" "aws_backup_s3_policy" {
+  role       = aws_iam_role.aws_backup.name
+  policy_arn = "arn:aws:iam::aws:policy/AWSBackupServiceRolePolicyForS3Backup"
+}
+
+# ============================================
+# AWS Backup Vault
+# ============================================
+
+resource "aws_backup_vault" "main" {
+  name = "${var.cluster_name}-backup-vault"
+
+  tags = merge(
+    var.tags,
+    {
+      Name        = "${var.cluster_name}-backup-vault"
+      Description = "Backup vault for EKS cluster resources"
+    }
+  )
 }
 
 # ============================================
@@ -376,21 +335,6 @@ output "efs_csi_role_arn" {
   value       = aws_iam_role.efs_csi.arn
 }
 
-output "karpenter_controller_role_arn" {
-  description = "Karpenter Controller IAM role ARN"
-  value       = aws_iam_role.karpenter_controller.arn
-}
-
-output "karpenter_node_role_arn" {
-  description = "Karpenter Node IAM role ARN"
-  value       = aws_iam_role.karpenter_node.arn
-}
-
-output "karpenter_instance_profile_name" {
-  description = "Karpenter Node instance profile name"
-  value       = aws_iam_instance_profile.karpenter_node.name
-}
-
 output "efs_filesystem_id" {
   description = "EFS filesystem ID"
   value       = aws_efs_file_system.test.id
@@ -409,4 +353,19 @@ output "cluster_name" {
 output "aws_region" {
   description = "AWS region"
   value       = var.aws_region
+}
+
+output "aws_backup_role_arn" {
+  description = "AWS Backup service role ARN"
+  value       = aws_iam_role.aws_backup.arn
+}
+
+output "backup_vault_name" {
+  description = "AWS Backup vault name"
+  value       = aws_backup_vault.main.name
+}
+
+output "backup_vault_arn" {
+  description = "AWS Backup vault ARN"
+  value       = aws_backup_vault.main.arn
 }

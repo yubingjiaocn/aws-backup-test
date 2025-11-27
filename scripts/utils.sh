@@ -13,19 +13,19 @@ NC='\033[0m' # No Color
 
 # 日志函数
 log_info() {
-    echo -e "${BLUE}[INFO]${NC} $(date '+%Y-%m-%d %H:%M:%S') - $1"
+    echo -e "${BLUE}[INFO]${NC} $(date '+%Y-%m-%d %H:%M:%S') - $1" >&2
 }
 
 log_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $(date '+%Y-%m-%d %H:%M:%S') - $1"
+    echo -e "${GREEN}[SUCCESS]${NC} $(date '+%Y-%m-%d %H:%M:%S') - $1" >&2
 }
 
 log_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $(date '+%Y-%m-%d %H:%M:%S') - $1"
+    echo -e "${YELLOW}[WARNING]${NC} $(date '+%Y-%m-%d %H:%M:%S') - $1" >&2
 }
 
 log_error() {
-    echo -e "${RED}[ERROR]${NC} $(date '+%Y-%m-%d %H:%M:%S') - $1"
+    echo -e "${RED}[ERROR]${NC} $(date '+%Y-%m-%d %H:%M:%S') - $1" >&2
 }
 
 # 检查必需的命令是否存在
@@ -231,7 +231,12 @@ verify_cluster_version() {
 # 获取恢复点 ARN
 get_latest_recovery_point() {
     local resource_arn=$1
-    local backup_vault=${2:-Default}
+    local backup_vault=${2:-}
+
+    # If vault not provided, try to get from Terraform output
+    if [ -z "$backup_vault" ]; then
+        backup_vault=$(cd "$(dirname "${BASH_SOURCE[0]}")/../terraform" && terraform output -raw backup_vault_name 2>/dev/null || echo "Default")
+    fi
 
     local recovery_point=$(aws backup list-recovery-points-by-resource \
         --resource-arn "$resource_arn" \

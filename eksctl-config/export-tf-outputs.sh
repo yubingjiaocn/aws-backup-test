@@ -94,9 +94,19 @@ iam:
   serviceRoleARN: ${CLUSTER_ROLE_ARN}
   withOIDC: true  # Enable OIDC for Pod Identity
 
-# Enable Pod Identity addon
+# Automatically apply recommended Pod Identity associations for all addons
+addonsConfig:
+  autoApplyPodIdentityAssociations: true
+
+# Enable Pod Identity addon and CSI Drivers
 addons:
   - name: eks-pod-identity-agent
+  - name: aws-ebs-csi-driver
+    version: latest
+    resolveConflicts: overwrite
+  - name: aws-efs-csi-driver
+    version: latest
+    resolveConflicts: overwrite
 
 # Managed node group using Terraform-created IAM role
 managedNodeGroups:

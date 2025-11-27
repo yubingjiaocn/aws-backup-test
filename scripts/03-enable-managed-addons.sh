@@ -1,5 +1,14 @@
 #!/bin/bash
 # 03-enable-managed-addons.sh - 启用 EKS 托管 Add-on (EBS/EFS CSI Drivers)
+#
+# 使用场景:
+#   1. 恢复的 EKS 集群 - AWS Backup 恢复的集群不会自动包含托管 add-ons
+#   2. 现有集群补充 add-ons - 为已存在的集群添加 CSI drivers
+#
+# 注意:
+#   - 新创建的集群（通过 eksctl）会在创建时自动安装 CSI drivers
+#   - 此脚本使用 Pod Identity 配置权限（推荐方式，取代 IRSA）
+#   - 脚本会自动创建所需的 IAM 角色和 Pod Identity 关联
 
 set -euo pipefail
 

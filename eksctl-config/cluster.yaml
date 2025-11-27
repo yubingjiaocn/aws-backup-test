@@ -30,14 +30,24 @@ iam:
   serviceRoleARN: ${CLUSTER_ROLE_ARN}
   withOIDC: true  # Enable OIDC for Pod Identity
 
-# Enable Pod Identity addon
+# Automatically apply recommended Pod Identity associations for all addons
+addonsConfig:
+  autoApplyPodIdentityAssociations: true
+
+# Enable Pod Identity addon and CSI Drivers
 addons:
   - name: eks-pod-identity-agent
+  - name: aws-ebs-csi-driver
+    version: latest
+    resolveConflicts: overwrite
+  - name: aws-efs-csi-driver
+    version: latest
+    resolveConflicts: overwrite
 
 # Managed node group using Terraform-created IAM role
 managedNodeGroups:
   - name: ng-1
-    instanceType: t3.medium
+    instanceType: m7i-flex.xlarge
     desiredCapacity: 2
     minSize: 2
     maxSize: 4
@@ -49,8 +59,3 @@ managedNodeGroups:
       k8s.io/cluster-autoscaler/enabled: "true"
       k8s.io/cluster-autoscaler/${CLUSTER_NAME}: "owned"
       karpenter.sh/discovery: ${CLUSTER_NAME}
-
-# CloudWatch logging
-cloudWatch:
-  clusterLogging:
-    enableTypes: ["api", "audit", "authenticator", "controllerManager", "scheduler"]

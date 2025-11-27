@@ -9,7 +9,10 @@ source "$SCRIPT_DIR/utils.sh"
 
 # 默认配置
 REGION="${REGION:-us-west-2}"
-BACKUP_VAULT="${BACKUP_VAULT:-Default}"
+# Try to get backup vault from Terraform output, fallback to "Default"
+if [ -z "${BACKUP_VAULT:-}" ]; then
+    BACKUP_VAULT=$(cd "$(dirname "$0")/../terraform" && terraform output -raw backup_vault_name 2>/dev/null || echo "Default")
+fi
 
 # 使用说明
 usage() {
@@ -128,62 +131,54 @@ get_cluster_arn() {
 }
 
 ensure_backup_role() {
-    local role_name="AWSBackupDefaultServiceRole"
-    local role_arn="arn:aws:iam::$(aws sts get-caller-identity --query Account --output text):role/$role_name"
+    # Try to get role ARN from Terraform output first
+    local role_arn=""
+    local role_name=""
 
-    # 检查角色是否存在
-    if aws iam get-role --role-name "$role_name" &> /dev/null; then
-        log_info "IAM 角色已存在: $role_name"
-        echo "$role_arn"
+    # Check if terraform directory exists and has outputs
+    if [ -d "$SCRIPT_DIR/../terraform" ]; then
+        role_arn=$(cd "$SCRIPT_DIR/../terraform" && terraform output -raw aws_backup_role_arn 2>/dev/null || echo "")
+    fi
+
+    if [ -n "$role_arn" ] && [ "$role_arn" != "null" ]; then
+        role_name=$(echo "$role_arn" | awk -F'/' '{print $NF}')
+        log_info "使用 Terraform 创建的 IAM 角色: $role_name"
+
+        # Verify the role exists
+        if aws iam get-role --role-name "$role_name" &> /dev/null; then
+            log_success "IAM 角色验证成功"
+            echo "$role_arn"
+            return 0
+        else
+            log_warning "Terraform 输出的角色不存在，尝试查找其他角色..."
+        fi
+    fi
+
+    # Fallback: try default role name
+    local default_role_name="AWSBackupDefaultServiceRole"
+    local default_role_arn="arn:aws:iam::$(aws sts get-caller-identity --query Account --output text):role/$default_role_name"
+
+    if aws iam get-role --role-name "$default_role_name" &> /dev/null; then
+        log_info "使用默认 IAM 角色: $default_role_name"
+        echo "$default_role_arn"
         return 0
     fi
 
-    log_info "创建 IAM 角色: $role_name"
-
-    # 创建信任策略
-    cat > /tmp/backup-trust-policy.json <<EOF
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Principal": {
-        "Service": "backup.amazonaws.com"
-      },
-      "Action": "sts:AssumeRole"
-    }
-  ]
-}
-EOF
-
-    # 创建角色
-    aws iam create-role \
-        --role-name "$role_name" \
-        --assume-role-policy-document file:///tmp/backup-trust-policy.json \
-        --description "Default role for AWS Backup service"
-
-    # 附加托管策略
-    aws iam attach-role-policy \
-        --role-name "$role_name" \
-        --policy-arn "arn:aws:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForBackup"
-
-    aws iam attach-role-policy \
-        --role-name "$role_name" \
-        --policy-arn "arn:aws:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForRestores"
-
-    # 等待角色生效
-    log_info "等待 IAM 角色生效..."
-    sleep 10
-
-    log_success "IAM 角色创建完成"
-    echo "$role_arn"
+    # No role found
+    log_error "未找到 AWS Backup IAM 角色"
+    log_error "请确保已运行 'terraform apply' 创建基础设施"
+    exit 1
 }
 
 create_backup() {
     local resource_arn=$1
     local iam_role_arn=$2
+    local max_retries=3
+    local retry_delay=30
 
     log_info "创建按需备份..."
+    log_info "资源 ARN: $resource_arn"
+    log_info "IAM 角色 ARN: $iam_role_arn"
 
     # 启动备份作业
     local response=$(aws backup start-backup-job \
@@ -191,17 +186,21 @@ create_backup() {
         --resource-arn "$resource_arn" \
         --iam-role-arn "$iam_role_arn" \
         --region "$REGION" \
-        --output json)
+        --output json 2>&1)
 
-    local job_id=$(echo "$response" | jq -r '.BackupJobId')
+    # 检查是否成功
+    local job_id=$(echo "$response" | jq -r '.BackupJobId' 2>/dev/null)
 
-    if [ -z "$job_id" ] || [ "$job_id" = "null" ]; then
-        log_error "无法创建备份作业"
-        echo "$response" | jq '.'
+    if [ -n "$job_id" ] && [ "$job_id" != "null" ]; then
+        log_success "备份作业创建成功"
+        echo "$job_id"
+        return 0
+    else
+        # 其他错误
+        log_error "创建备份作业失败"
+        echo "$response"
         exit 1
     fi
-
-    echo "$job_id"
 }
 
 get_recovery_point_info() {
@@ -215,12 +214,10 @@ get_recovery_point_info() {
         --region "$REGION")
 
     local recovery_point_arn=$(echo "$job_info" | jq -r '.RecoveryPointArn')
-    local backup_size=$(echo "$job_info" | jq -r '.BackupSizeInBytes')
     local creation_date=$(echo "$job_info" | jq -r '.CreationDate')
     local completion_date=$(echo "$job_info" | jq -r '.CompletionDate')
 
     log_success "恢复点 ARN: $recovery_point_arn"
-    log_info "备份大小: $(( backup_size / 1024 / 1024 )) MB"
     log_info "创建时间: $creation_date"
     log_info "完成时间: $completion_date"
 
